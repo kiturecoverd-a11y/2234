@@ -23,8 +23,8 @@ class BotEvents(commands.Cog):
 
         # Set presence
         activity = discord.Activity(
-            type=discord.ActivityType.watching,
-            name=f"for files • {Config.PREFIX}help"
+            type=discord.ActivityType.playing,
+            name=f"{Config.BOT_NAME} v{Config.BOT_VERSION}"
         )
         await self.bot.change_presence(activity=activity)
         logger.info("✅ Bot is ready and online!")
