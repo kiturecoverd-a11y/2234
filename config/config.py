@@ -5,6 +5,20 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _safe_int(env_var, default):
+    """Safely parse an integer from an environment variable."""
+    value = os.getenv(env_var, str(default))
+    # Strip any non-numeric suffixes/comments users might accidentally add
+    cleaned = value.strip().split()[0] if value.strip() else str(default)
+    try:
+        return int(cleaned)
+    except ValueError:
+        raise ValueError(
+            f"Environment variable '{env_var}' must be a plain integer. "
+            f"Got: '{value}'. Please set it to something like '{default}'."
+        )
+
+
 class Config:
     """
     Centralized, validated configuration for the Discord File Bot.
@@ -49,11 +63,11 @@ class Config:
     # Discord Nitro Classic  = 50  MB
     # Discord Nitro          = 500 MB
     # Default to 500 MB since user mentioned having Nitro
-    MAX_FILE_SIZE = int(os.getenv('MAX_FILE_SIZE_MB', '500')) * 1024 * 1024
+    MAX_FILE_SIZE = _safe_int('MAX_FILE_SIZE_MB', 500) * 1024 * 1024
 
     # ─── Rate Limits ─────────────────────────────────────────────────────────
-    COOLDOWN_SECONDS = int(os.getenv('COOLDOWN_SECONDS', '3'))
-    MAX_FILES_PER_COMMAND = int(os.getenv('MAX_FILES_PER_COMMAND', '10'))
+    COOLDOWN_SECONDS = _safe_int('COOLDOWN_SECONDS', 3)
+    MAX_FILES_PER_COMMAND = _safe_int('MAX_FILES_PER_COMMAND', 10)
 
     # ─── Logging ─────────────────────────────────────────────────────────────
     LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
@@ -67,7 +81,7 @@ class Config:
     EMBED_COLOR_INFO = 0xEB459E      # Pink
 
     # ─── Health Check Server (for Railway) ───────────────────────────────────
-    HEALTH_CHECK_PORT = int(os.getenv('PORT', '8080'))
+    HEALTH_CHECK_PORT = _safe_int('PORT', 8080)
 
     @staticmethod
     def validate():
