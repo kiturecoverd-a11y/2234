@@ -4,10 +4,9 @@ from discord.ext import commands
 
 from config.config import Config
 from utils.logger import setup_logger
-from utils.file_utils import send_attachment_to_dm, validate_file
+from utils.file_utils import send_attachment_to_dm, validate_file, send_to_dm_with_retry, _get_or_create_dm
 from utils.helpers import is_owner, build_embed, format_bytes
 from utils.dm_tracker import mark_dm_sent
-from utils.file_utils import _get_or_create_dm
 
 logger = setup_logger(__name__)
 

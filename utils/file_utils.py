@@ -1,6 +1,7 @@
 import io
 import os
 import aiohttp
+import discord
 from config.config import Config
 from utils.logger import setup_logger
 from utils.dm_tracker import mark_dm_sent
@@ -43,16 +44,9 @@ async def validate_file(attachment):
 
 async def _get_or_create_dm(user, bot_user=None):
     """
-    Get an existing DM channel or create a new one.
-    Handles the case where the DM was 'closed' by the user.
+    Create a fresh DM channel for the user.
+    This always works even if the user 'closed' their previous DM.
     """
-    # Try to find an existing DM channel the bot already knows about
-    if bot_user:
-        for ch in bot_user.private_channels:
-            if isinstance(ch, __import__('discord').DMChannel) and ch.recipient and ch.recipient.id == user.id:
-                return ch
-
-    # Create (or re-open) the DM channel
     try:
         return await user.create_dm()
     except discord.Forbidden:
@@ -63,67 +57,99 @@ async def _get_or_create_dm(user, bot_user=None):
         raise RuntimeError(f"Cannot create DM: {exc.text}")
 
 
+async def send_to_dm_with_retry(user, send_callback, bot_user=None):
+    """
+    Attempt to send a message/file to a user's DM.
+    If the cached DM channel is closed/invalid, creates a new one and retries.
+
+    Args:
+        user: discord.User to send to
+        send_callback: async function(dm_channel) that performs the send
+        bot_user: the bot's user object
+
+    Returns:
+        tuple: (success: bool, error_message: str or None)
+    """
+    dm_channel = None
+
+    # ── Attempt 1: try cached DM channel ──
+    if bot_user:
+        for ch in bot_user.private_channels:
+            if isinstance(ch, discord.DMChannel) and ch.recipient and ch.recipient.id == user.id:
+                dm_channel = ch
+                break
+
+    if dm_channel:
+        try:
+            await send_callback(dm_channel)
+            return True, None
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            # Cached DM is closed or invalid — fall through to create a new one
+            logger.warning(f"Cached DM closed for {user.id}, creating new DM channel...")
+            dm_channel = None
+
+    # ── Attempt 2: create a fresh DM channel and send ──
+    try:
+        dm_channel = await _get_or_create_dm(user, bot_user)
+        await send_callback(dm_channel)
+        return True, None
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        if getattr(exc, 'code', None) == 50007 or "Cannot send messages to this user" in str(exc):
+            return False, "User has DMs disabled or has blocked the bot."
+        return False, str(exc)
+    except RuntimeError as exc:
+        return False, str(exc)
+
+
 async def send_attachment_to_dm(user, attachment, bot_user=None, sender=None):
     """
     Stream a Discord attachment directly to a user's DM without touching disk.
-
-    Args:
-        user:        discord.User target
-        attachment:  discord.Attachment to forward
-        bot_user:    Optional bot user for attribution embed
-        sender:      Optional discord.User who triggered the send (for logging)
+    Handles closed DMs by re-creating the channel and retrying.
 
     Returns:
         tuple: (success: bool, message: str, filename: str)
     """
     filename = getattr(attachment, 'filename', 'unknown')
 
-    try:
-        # ── Validate ──
-        is_valid, error_msg = await validate_file(attachment)
-        if not is_valid:
-            return False, error_msg, filename
+    # ── Validate ──
+    is_valid, error_msg = await validate_file(attachment)
+    if not is_valid:
+        return False, error_msg, filename
 
-        # ── Open DM (handles closed DMs by re-creating the channel) ──
-        dm_channel = await _get_or_create_dm(user, bot_user)
+    # ── Prepare file in memory ──
+    file_bytes = await attachment.read()
+    file_buffer = io.BytesIO(file_bytes)
+    discord_file = discord.File(fp=file_buffer, filename=filename)
 
-        # ── Stream bytes into memory (no temp files) ──
-        file_bytes = await attachment.read()
-        file_buffer = io.BytesIO(file_bytes)
+    # ── Build embed ──
+    embed = None
+    if bot_user:
+        embed = discord.Embed(
+            description=f"📁 **File received** via {bot_user.mention}",
+            color=Config.EMBED_COLOR_PRIMARY
+        )
+        embed.set_author(
+            name=f"Sent by {Config.BOT_NAME}",
+            icon_url=bot_user.display_avatar.url if bot_user.display_avatar else None
+        )
+        embed.set_footer(text=f"{Config.BOT_NAME} v{Config.BOT_VERSION}")
 
-        # ── Build discord.File ──
-        discord_file = __import__('discord').File(fp=file_buffer, filename=filename)
-
-        # ── Send with attribution ──
-        if bot_user:
-            embed = __import__('discord').Embed(
-                description=f"📁 **File received** via {bot_user.mention}",
-                color=Config.EMBED_COLOR_PRIMARY
-            )
-            embed.set_author(
-                name=f"Sent by {Config.BOT_NAME}",
-                icon_url=bot_user.display_avatar.url if bot_user.display_avatar else None
-            )
-            embed.set_footer(text=f"{Config.BOT_NAME} v{Config.BOT_VERSION}")
-            await dm_channel.send(embed=embed, file=discord_file)
+    # ── Send with retry logic ──
+    async def _do_send(channel):
+        if embed:
+            await channel.send(embed=embed, file=discord_file)
         else:
-            await dm_channel.send(file=discord_file)
+            await channel.send(file=discord_file)
 
-        # Track that we sent a DM so we can detect when they open/reply
+    ok, err = await send_to_dm_with_retry(user, _do_send, bot_user)
+
+    if ok:
         mark_dm_sent(user.id)
-
         logger.info(
             f"Sent '{filename}' ({len(file_bytes)} bytes) to {user} ({user.id})"
             f" by {sender or 'unknown'}"
         )
         return True, f"Sent `{filename}` to {user.mention}", filename
-
-    except Exception as exc:
-        error_str = str(exc)
-        if "Cannot send messages to this user" in error_str:
-            error_str = "User has DMs disabled or has blocked the bot."
-        elif "rate limit" in error_str.lower():
-            error_str = "Discord rate limit hit. Please wait a moment."
-
-        logger.error(f"Failed to send '{filename}' to {user}: {error_str}")
-        return False, f"Failed to send `{filename}`: {error_str}", filename
+    else:
+        logger.error(f"Failed to send '{filename}' to {user}: {err}")
+        return False, f"Failed to send `{filename}`: {err}", filename
