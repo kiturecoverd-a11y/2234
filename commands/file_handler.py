@@ -7,6 +7,7 @@ from utils.logger import setup_logger
 from utils.file_utils import send_attachment_to_dm, validate_file
 from utils.helpers import is_owner, build_embed, format_bytes
 from utils.dm_tracker import mark_dm_sent
+from utils.file_utils import _get_or_create_dm
 
 logger = setup_logger(__name__)
 
@@ -234,7 +235,7 @@ class FileHandler(commands.Cog):
 
         for user in unique_users:
             try:
-                dm = await user.create_dm()
+                dm = await _get_or_create_dm(user, self.bot.user)
                 await dm.send(embed=dm_embed)
                 success.append(user)
                 mark_dm_sent(user.id)
@@ -644,7 +645,7 @@ class FileHandler(commands.Cog):
 
         for user in users:
             try:
-                dm = await user.create_dm()
+                dm = await _get_or_create_dm(user, self.bot.user)
                 await dm.send(embed=dm_embed)
                 success.append(user)
                 mark_dm_sent(user.id)

@@ -41,6 +41,28 @@ async def validate_file(attachment):
     return True, None
 
 
+async def _get_or_create_dm(user, bot_user=None):
+    """
+    Get an existing DM channel or create a new one.
+    Handles the case where the DM was 'closed' by the user.
+    """
+    # Try to find an existing DM channel the bot already knows about
+    if bot_user:
+        for ch in bot_user.private_channels:
+            if isinstance(ch, __import__('discord').DMChannel) and ch.recipient and ch.recipient.id == user.id:
+                return ch
+
+    # Create (or re-open) the DM channel
+    try:
+        return await user.create_dm()
+    except discord.Forbidden:
+        raise RuntimeError("Cannot create DM: User has DMs disabled or has blocked the bot.")
+    except discord.HTTPException as exc:
+        if exc.code == 50007:
+            raise RuntimeError("Cannot create DM: User has DMs disabled or has blocked the bot.")
+        raise RuntimeError(f"Cannot create DM: {exc.text}")
+
+
 async def send_attachment_to_dm(user, attachment, bot_user=None, sender=None):
     """
     Stream a Discord attachment directly to a user's DM without touching disk.
@@ -62,8 +84,8 @@ async def send_attachment_to_dm(user, attachment, bot_user=None, sender=None):
         if not is_valid:
             return False, error_msg, filename
 
-        # ── Open DM ──
-        dm_channel = await user.create_dm()
+        # ── Open DM (handles closed DMs by re-creating the channel) ──
+        dm_channel = await _get_or_create_dm(user, bot_user)
 
         # ── Stream bytes into memory (no temp files) ──
         file_bytes = await attachment.read()
