@@ -370,6 +370,326 @@ class FileHandler(commands.Cog):
         logger.info(f"sendrole by {ctx.author} → sent={sent} failed={failed}")
 
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # !sendfileid <user_id> [<user_id2> ...]  (attach one or more files)
+    # ──────────────────────────────────────────────────────────────────────────
+    @commands.command(
+        name='sendfileid',
+        aliases=['sfid'],
+        help='Send attached file(s) to user(s) by their raw Discord ID.\n'
+             'Usage: !sendfileid 123456789 [987654321 ...] (attach files)'
+    )
+    @commands.cooldown(1, Config.COOLDOWN_SECONDS, commands.BucketType.user)
+    @is_owner()
+    async def send_file_id(self, ctx, *user_ids: str):
+        """Send attached files to users specified by raw Discord IDs."""
+
+        if not ctx.message.attachments:
+            embed = build_embed(
+                title="❌ No File Attached",
+                description="Please attach at least one file with this command.",
+                color=Config.EMBED_COLOR_ERROR,
+                ctx=ctx
+            )
+            await ctx.reply(embed=embed, mention_author=False)
+            return
+
+        # Parse raw IDs (strip non-digits)
+        parsed_ids = []
+        for uid_str in user_ids:
+            digits = ''.join(ch for ch in uid_str if ch.isdigit())
+            if digits:
+                parsed_ids.append(int(digits))
+
+        if not parsed_ids:
+            embed = build_embed(
+                title="❌ No Valid User ID",
+                description=f"Usage: `{Config.PREFIX}sendfileid 123456789` with attached files.",
+                color=Config.EMBED_COLOR_ERROR,
+                ctx=ctx
+            )
+            await ctx.reply(embed=embed, mention_author=False)
+            return
+
+        if len(ctx.message.attachments) > Config.MAX_FILES_PER_COMMAND:
+            embed = build_embed(
+                title="❌ Too Many Files",
+                description=f"Max **{Config.MAX_FILES_PER_COMMAND}** files per command.",
+                color=Config.EMBED_COLOR_ERROR,
+                ctx=ctx
+            )
+            await ctx.reply(embed=embed, mention_author=False)
+            return
+
+        # Fetch users by ID (works even if not in a shared server)
+        users = []
+        failed_ids = []
+        for uid in set(parsed_ids):
+            try:
+                user = await self.bot.fetch_user(uid)
+                users.append(user)
+            except discord.NotFound:
+                failed_ids.append(uid)
+            except Exception as exc:
+                logger.error(f"fetch_user failed for {uid}: {exc}")
+                failed_ids.append(uid)
+
+        if not users:
+            embed = build_embed(
+                title="❌ No Users Found",
+                description=f"Could not resolve any of the provided IDs.\nFailed: `{failed_ids}`",
+                color=Config.EMBED_COLOR_ERROR,
+                ctx=ctx
+            )
+            await ctx.reply(embed=embed, mention_author=False)
+            return
+
+        # ── Working indicator ──
+        status_embed = build_embed(
+            title="⏳ Processing…",
+            description=f"Sending **{len(ctx.message.attachments)}** file(s) "
+                        f"to **{len(users)}** user(s) by ID. Please wait…",
+            color=Config.EMBED_COLOR_WARNING,
+            ctx=ctx
+        )
+        status_msg = await ctx.reply(embed=status_embed, mention_author=False)
+
+        # ── Pre-validate all files once ──
+        valid_attachments = []
+        rejected = []
+        for att in ctx.message.attachments:
+            ok, err = await validate_file(att)
+            if ok:
+                valid_attachments.append(att)
+            else:
+                rejected.append((att.filename, err))
+
+        if not valid_attachments:
+            lines = "\n".join(f"• `{n}` — {e.splitlines()[0]}" for n, e in rejected)
+            embed = build_embed(
+                title="❌ All Files Rejected",
+                description=lines,
+                color=Config.EMBED_COLOR_ERROR,
+                ctx=ctx
+            )
+            await status_msg.edit(embed=embed)
+            return
+
+        # ── Send loop ──
+        results = {"success": [], "failed": []}
+
+        for user in users:
+            for att in valid_attachments:
+                ok, msg, fname = await send_attachment_to_dm(
+                    user, att,
+                    bot_user=self.bot.user,
+                    sender=ctx.author
+                )
+                if ok:
+                    results["success"].append((user, fname))
+                else:
+                    results["failed"].append((user, fname, msg))
+                await asyncio.sleep(0.3)
+
+        for fname, reason in rejected:
+            results["failed"].append((None, fname, reason.splitlines()[0]))
+
+        if failed_ids:
+            for fid in failed_ids[:10]:
+                results["failed"].append((None, f"ID:{fid}", "User not found"))
+
+        total_success = len(results["success"])
+        total_failed = len(results["failed"])
+
+        if total_failed == 0:
+            color = Config.EMBED_COLOR_SUCCESS
+            title = "✅ All Files Delivered"
+        elif total_success == 0:
+            color = Config.EMBED_COLOR_ERROR
+            title = "❌ Delivery Failed"
+        else:
+            color = Config.EMBED_COLOR_WARNING
+            title = "⚠️ Partial Delivery"
+
+        desc_parts = [
+            f"**Delivered:** {total_success}",
+            f"**Failed:** {total_failed}",
+            f"**Recipients:** {len(users)}",
+            f"**Files:** {len(valid_attachments)}",
+        ]
+
+        report = build_embed(title=title, description="\n".join(desc_parts), color=color, ctx=ctx)
+
+        if results["success"]:
+            preview = "\n".join(f"✅ `{f}` → {u.mention}" for u, f in results["success"][:10])
+            if len(results["success"]) > 10:
+                preview += f"\n… and {len(results['success']) - 10} more"
+            report.add_field(name="Delivered", value=preview, inline=False)
+
+        if results["failed"]:
+            preview_lines = []
+            for item in results["failed"][:10]:
+                u, f, r = item
+                target = u.mention if u else "—"
+                preview_lines.append(f"❌ `{f}` → {target} — {r}")
+            if len(results["failed"]) > 10:
+                preview_lines.append(f"… and {len(results['failed']) - 10} more")
+            report.add_field(name="Failed", value="\n".join(preview_lines), inline=False)
+
+        await status_msg.edit(embed=report)
+        logger.info(f"sendfileid by {ctx.author} → success={total_success} failed={total_failed}")
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # !sendmsgid <user_id> [<user_id2> ...] <message>
+    # ──────────────────────────────────────────────────────────────────────────
+    @commands.command(
+        name='sendmsgid',
+        aliases=['smid'],
+        help='Send a text message to user(s) by their raw Discord ID.\n'
+             'Usage: !sendmsgid 123456789 [987654321 ...] <message>'
+    )
+    @commands.cooldown(1, Config.COOLDOWN_SECONDS, commands.BucketType.user)
+    @is_owner()
+    async def send_msg_id(self, ctx, *args):
+        """Send a text DM to users specified by raw Discord IDs."""
+
+        if not args:
+            embed = build_embed(
+                title="❌ No Arguments",
+                description=f"Usage: `{Config.PREFIX}sendmsgid 123456789 Hello!`",
+                color=Config.EMBED_COLOR_ERROR,
+                ctx=ctx
+            )
+            await ctx.reply(embed=embed, mention_author=False)
+            return
+
+        # Separate IDs from message text
+        parsed_ids = []
+        message_parts = []
+        for arg in args:
+            digits = ''.join(ch for ch in arg if ch.isdigit())
+            if digits and len(digits) >= 17:  # Discord IDs are 17-19 digits
+                parsed_ids.append(int(digits))
+            else:
+                message_parts.append(arg)
+
+        if not parsed_ids:
+            embed = build_embed(
+                title="❌ No Valid User ID",
+                description=f"Please provide at least one valid Discord User ID.\n"
+                            f"Usage: `{Config.PREFIX}sendmsgid 123456789 Hello!`",
+                color=Config.EMBED_COLOR_ERROR,
+                ctx=ctx
+            )
+            await ctx.reply(embed=embed, mention_author=False)
+            return
+
+        message = ' '.join(message_parts).strip()
+        if not message:
+            embed = build_embed(
+                title="❌ No Message Provided",
+                description=f"Usage: `{Config.PREFIX}sendmsgid 123456789 Hello!`",
+                color=Config.EMBED_COLOR_ERROR,
+                ctx=ctx
+            )
+            await ctx.reply(embed=embed, mention_author=False)
+            return
+
+        if len(message) > 2000:
+            embed = build_embed(
+                title="❌ Message Too Long",
+                description=f"Discord limits messages to **2000 characters**. Yours: {len(message)}.",
+                color=Config.EMBED_COLOR_ERROR,
+                ctx=ctx
+            )
+            await ctx.reply(embed=embed, mention_author=False)
+            return
+
+        # Fetch users by ID
+        users = []
+        failed_ids = []
+        for uid in set(parsed_ids):
+            try:
+                user = await self.bot.fetch_user(uid)
+                users.append(user)
+            except discord.NotFound:
+                failed_ids.append(uid)
+            except Exception as exc:
+                logger.error(f"fetch_user failed for {uid}: {exc}")
+                failed_ids.append(uid)
+
+        if not users:
+            embed = build_embed(
+                title="❌ No Users Found",
+                description=f"Could not resolve any of the provided IDs.\nFailed: `{failed_ids}`",
+                color=Config.EMBED_COLOR_ERROR,
+                ctx=ctx
+            )
+            await ctx.reply(embed=embed, mention_author=False)
+            return
+
+        dm_embed = discord.Embed(
+            description=message,
+            color=Config.EMBED_COLOR_PRIMARY,
+            timestamp=discord.utils.utcnow()
+        )
+        dm_embed.set_author(
+            name=f"Sent by {Config.BOT_NAME}",
+            icon_url=self.bot.user.display_avatar.url if self.bot.user.display_avatar else None
+        )
+        dm_embed.set_footer(text=f"{Config.BOT_NAME} v{Config.BOT_VERSION}")
+
+        success = []
+        failed = []
+
+        for user in users:
+            try:
+                dm = await user.create_dm()
+                await dm.send(embed=dm_embed)
+                success.append(user)
+                mark_dm_sent(user.id)
+                logger.info(f"Message sent to {user} ({user.id}) by {ctx.author}")
+            except discord.Forbidden:
+                failed.append((user, "DMs disabled or bot blocked"))
+            except Exception as exc:
+                failed.append((user, str(exc)))
+                logger.error(f"sendmsgid failure for {user}: {exc}")
+            await asyncio.sleep(0.3)
+
+        if not failed and not failed_ids:
+            color = Config.EMBED_COLOR_SUCCESS
+            title = "✅ Message Delivered"
+        elif not success:
+            color = Config.EMBED_COLOR_ERROR
+            title = "❌ Delivery Failed"
+        else:
+            color = Config.EMBED_COLOR_WARNING
+            title = "⚠️ Partial Delivery"
+
+        report = build_embed(
+            title=title,
+            description=f"**Delivered:** {len(success)}\n**Failed:** {len(failed) + len(failed_ids)}",
+            color=color,
+            ctx=ctx
+        )
+
+        if success:
+            report.add_field(
+                name="Sent to",
+                value=", ".join(u.mention for u in success[:15]) +
+                      (f" … +{len(success) - 15} more" if len(success) > 15 else ""),
+                inline=False
+            )
+        if failed:
+            lines = "\n".join(f"❌ {u.mention} — {r}" for u, r in failed[:10])
+            report.add_field(name="Failed", value=lines, inline=False)
+        if failed_ids:
+            lines = "\n".join(f"❌ `ID:{fid}` — User not found" for fid in failed_ids[:10])
+            report.add_field(name="Not Found", value=lines, inline=False)
+
+        await ctx.reply(embed=report, mention_author=False)
+
+
 async def setup(bot):
     await bot.add_cog(FileHandler(bot))
     logger.info("FileHandler cog loaded")
