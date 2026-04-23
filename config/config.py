@@ -6,17 +6,35 @@ load_dotenv()
 
 
 def _safe_int(env_var, default):
-    """Safely parse an integer from an environment variable."""
+    """Safely parse an integer from an environment variable.
+    Handles accidental copy-paste issues like '=500', tabs, quotes, etc."""
     value = os.getenv(env_var, str(default))
-    # Strip any non-numeric suffixes/comments users might accidentally add
-    cleaned = value.strip().split()[0] if value.strip() else str(default)
+    if not value or not value.strip():
+        return default
+
+    # Aggressively clean the value:
+    # 1. Strip whitespace (spaces, tabs, newlines)
+    # 2. Strip leading '=' (common when copying from .env files)
+    # 3. Strip quotes
+    cleaned = value.strip().lstrip('=').strip().strip('"').strip("'")
+
     try:
         return int(cleaned)
     except ValueError:
-        raise ValueError(
-            f"Environment variable '{env_var}' must be a plain integer. "
-            f"Got: '{value}'. Please set it to something like '{default}'."
-        )
+        # Fallback: extract the first contiguous block of digits
+        digits = []
+        started = False
+        for ch in cleaned:
+            if ch.isdigit():
+                digits.append(ch)
+                started = True
+            elif started:
+                break
+        if digits:
+            return int(''.join(digits))
+
+        # If nothing works, return default so the bot doesn't crash
+        return default
 
 
 class Config:
