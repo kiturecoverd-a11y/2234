@@ -6,6 +6,7 @@ from config.config import Config
 from utils.logger import setup_logger
 from utils.file_utils import send_attachment_to_dm, validate_file
 from utils.helpers import is_owner, build_embed, format_bytes
+from utils.dm_tracker import mark_dm_sent
 
 logger = setup_logger(__name__)
 
@@ -223,8 +224,8 @@ class FileHandler(commands.Cog):
             timestamp=discord.utils.utcnow()
         )
         dm_embed.set_author(
-            name=f"Message from {ctx.author}",
-            icon_url=ctx.author.display_avatar.url if ctx.author.display_avatar else None
+            name=f"Sent by {Config.BOT_NAME}",
+            icon_url=self.bot.user.display_avatar.url if self.bot.user.display_avatar else None
         )
         dm_embed.set_footer(text=f"{Config.BOT_NAME} v{Config.BOT_VERSION}")
 
@@ -236,6 +237,7 @@ class FileHandler(commands.Cog):
                 dm = await user.create_dm()
                 await dm.send(embed=dm_embed)
                 success.append(user)
+                mark_dm_sent(user.id)
                 logger.info(f"Message sent to {user} ({user.id}) by {ctx.author}")
             except discord.Forbidden:
                 failed.append((user, "DMs disabled or bot blocked"))
@@ -343,8 +345,8 @@ class FileHandler(commands.Cog):
             timestamp=discord.utils.utcnow()
         )
         dm_embed.set_author(
-            name=f"Message from {ctx.author}",
-            icon_url=ctx.author.display_avatar.url if ctx.author.display_avatar else None
+            name=f"Sent by {Config.BOT_NAME}",
+            icon_url=self.bot.user.display_avatar.url if self.bot.user.display_avatar else None
         )
         dm_embed.set_footer(text=f"{Config.BOT_NAME} v{Config.BOT_VERSION}")
 
@@ -352,6 +354,7 @@ class FileHandler(commands.Cog):
         for member in members:
             try:
                 await (await member.create_dm()).send(embed=dm_embed)
+                mark_dm_sent(member.id)
                 sent += 1
             except Exception:
                 failed += 1

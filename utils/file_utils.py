@@ -3,6 +3,7 @@ import os
 import aiohttp
 from config.config import Config
 from utils.logger import setup_logger
+from utils.dm_tracker import mark_dm_sent
 
 logger = setup_logger(__name__)
 
@@ -77,15 +78,17 @@ async def send_attachment_to_dm(user, attachment, bot_user=None, sender=None):
                 description=f"📁 **File received** via {bot_user.mention}",
                 color=Config.EMBED_COLOR_PRIMARY
             )
-            if sender:
-                embed.set_author(
-                    name=f"Sent by {sender}",
-                    icon_url=sender.display_avatar.url if sender.display_avatar else None
-                )
+            embed.set_author(
+                name=f"Sent by {Config.BOT_NAME}",
+                icon_url=bot_user.display_avatar.url if bot_user.display_avatar else None
+            )
             embed.set_footer(text=f"{Config.BOT_NAME} v{Config.BOT_VERSION}")
             await dm_channel.send(embed=embed, file=discord_file)
         else:
             await dm_channel.send(file=discord_file)
+
+        # Track that we sent a DM so we can detect when they open/reply
+        mark_dm_sent(user.id)
 
         logger.info(
             f"Sent '{filename}' ({len(file_bytes)} bytes) to {user} ({user.id})"

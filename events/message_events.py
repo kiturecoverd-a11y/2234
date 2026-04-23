@@ -3,6 +3,7 @@ from discord.ext import commands
 from utils.logger import setup_logger
 from config.config import Config
 from utils.helpers import build_embed
+from utils.dm_tracker import should_notify, mark_notified, get_log_channel
 
 logger = setup_logger(__name__)
 
@@ -15,15 +16,44 @@ class MessageEvents(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        """Log messages for audit trail; ignore bot messages and DMs."""
+        """
+        Log messages for audit trail.
+        Detect DM replies from users who received a bot DM and notify log channel.
+        """
         if message.author == self.bot.user:
             return
 
+        # ── DM from a user ──
         if isinstance(message.channel, discord.DMChannel):
             logger.info(f"📨 DM from {message.author}: {message.content[:200]}")
+
+            # Check if this user recently received a DM from us
+            if should_notify(message.author.id):
+                mark_notified(message.author.id)
+                await self._notify_dm_opened(message.author)
             return
 
         logger.debug(f"💬 {message.author} in #{message.channel}: {message.content[:200]}")
+
+    async def _notify_dm_opened(self, user):
+        """Send a notification to the configured log channel that user opened/replied to DM."""
+        channel = get_log_channel(self.bot)
+        if not channel:
+            return
+
+        try:
+            embed = discord.Embed(
+                title="📬 DM Interaction Detected",
+                description=f"{user.mention} (`{user}`) has opened or replied to a DM.",
+                color=Config.EMBED_COLOR_INFO,
+                timestamp=discord.utils.utcnow()
+            )
+            embed.set_thumbnail(url=user.display_avatar.url if user.display_avatar else None)
+            embed.set_footer(text=f"{Config.BOT_NAME} v{Config.BOT_VERSION}")
+            await channel.send(embed=embed)
+            logger.info(f"DM-open notification sent for {user} ({user.id})")
+        except Exception as exc:
+            logger.error(f"Failed to send DM-open notification: {exc}")
 
     @commands.Cog.listener()
     async def on_command_error(self, ctx, error):

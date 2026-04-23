@@ -101,6 +101,10 @@ class Config:
     # ─── Health Check Server (for Railway) ───────────────────────────────────
     HEALTH_CHECK_PORT = _safe_int('PORT', 8080)
 
+    # ─── Log Channel ─────────────────────────────────────────────────────────
+    # Discord channel ID where DM-open notifications are sent
+    LOG_CHANNEL_ID = _safe_int('LOG_CHANNEL_ID', 0) or None
+
     @staticmethod
     def validate():
         """
